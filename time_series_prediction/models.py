@@ -11,8 +11,6 @@ from torch.nn.parameter import Parameter
 import layers as layers
 from typing import Tuple, Optional, Dict
 
-# changing device
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 EPS = torch.finfo(torch.float).eps # numerical logs  
 
 """Based on the implementation of the Memory-Augmented Recurrent Neural Network (MRNN)
@@ -50,10 +48,10 @@ class LSTM(nn.Module):
     def forward(self, inputs, hidden_state=None):
         time_steps = inputs.shape[0]
         batch_size = inputs.shape[1]
-        outputs = torch.Tensor(time_steps, batch_size, self.out_size)
+        outputs = torch.zeros(time_steps, batch_size, self.out_size, dtype = inputs.dtype, device = inputs.device)
         if hidden_state is None:
-            h_0 = torch.zeros(batch_size, self.h_size)
-            c_0 = torch.zeros(batch_size, self.h_size)
+            h_0 = torch.zeros(batch_size, self.h_size, dtype = inputs.dtype, device = inputs.device)
+            c_0 = torch.zeros(batch_size, self.h_size, dtype = inputs.dtype, device = inputs.device)
             hidden_state = (h_0, c_0)
         else:
             h_0 = hidden_state[0]
@@ -62,7 +60,90 @@ class LSTM(nn.Module):
             h_0, c_0 = self.lstm_cell(inputs[times, :], (h_0, c_0))
             outputs[times, :] = self.output(h_0)
         return outputs, (h_0, c_0)
+    
+class AttnLSTM(nn.Module):
+    """AttnLSTM model for time series prediction"""
+    def __init__(self, input_size, hidden_size, output_size):
+        super(AttnLSTM, self).__init__()
+        self.in_size = input_size
+        self.h_size = hidden_size
+        self.out_size = output_size
+        self.lstm_cell = nn.LSTMCell(input_size, hidden_size)
+        self.output = nn.Linear(hidden_size, output_size)
+        # Attention mechanism
+        self.attention = nn.Linear(hidden_size, 1)
+        self.dropout = nn.Dropout(0.2)
 
+    def attention_net(self, lstm_output):
+        if lstm_output.dim() == 2:
+            lstm_output = lstm_output.unsqueeze(0) # Add batch dimension
+        # Calculate attention scores
+        attn_scores = self.attention(lstm_output)  # (batch, seq_len, 1)
+        if attn_scores.dim() == 3:
+            attn_scores = attn_scores.squeeze(-1)  # (batch, seq_len)
+        elif attn_scores.dim() == 2:
+            pass  # Already (batch, seq_len)
+        # Apply softmax to get attention weights
+        attn_weights = F.softmax(attn_scores, dim=1)  # (batch, seq_len)
+        # Calculate context vector as weighted sum
+        context = torch.bmm(
+            attn_weights.unsqueeze(1),  # (batch, 1, seq_len)
+            lstm_output  # (batch, seq_len, hidden)
+        ).squeeze(1)  # (batch, hidden)
+        return context
+
+    def forward(self, inputs, hidden_state=None):
+        time_steps = inputs.shape[0]
+        batch_size = inputs.shape[1]
+        outputs = torch.zeros(time_steps, batch_size, self.out_size, dtype = inputs.dtype, device = inputs.device)
+        if hidden_state is None:
+            h_0 = torch.zeros(batch_size, self.h_size, dtype = inputs.dtype, device = inputs.device)
+            c_0 = torch.zeros(batch_size, self.h_size, dtype = inputs.dtype, device = inputs.device)
+            hidden_state = (h_0, c_0)
+        else:
+            h_0 = hidden_state[0]
+            c_0 = hidden_state[1]
+        for times in range(time_steps):
+            h_0, c_0 = self.lstm_cell(inputs[times, :], (h_0, c_0))
+            context = self.attention_net(h_0)
+            context = self.dropout(context)
+            outputs[times, :] = self.output(context)
+        
+        return outputs, (h_0, c_0)
+    
+class GRU(nn.Module):
+    """GRU model using GRUCell for time series prediction"""
+    def __init__(self, input_size, hidden_size, output_size):
+        super(GRU, self).__init__()
+        self.in_size = input_size
+        self.h_size = hidden_size
+        self.out_size = output_size
+        self.gru_cell = nn.GRUCell(input_size,hidden_size)
+        self.output = nn.Linear(hidden_size, output_size)
+        self.dropout = nn.Dropout(0.2)
+    
+    def forward(self, inputs, hidden_state=None):
+        
+        time_steps = inputs.shape[0]
+        batch_size = inputs.shape[1]
+        
+        if hidden_state is None:
+            h_0 = torch.zeros(batch_size, self.h_size, dtype = inputs.dtype, device = inputs.device)
+        else:
+            h_0 = hidden_state
+        
+        # Store outputs for each time step
+        outputs = torch.zeros(time_steps, batch_size, self.out_size, 
+                            dtype=inputs.dtype, device=inputs.device)
+        
+        # Process each time step
+        for t in range(time_steps):
+            h_0 = self.gru_cell(inputs[t, :], h_0)
+            
+            # Generate output for this timestep using last layer's hidden state
+            outputs[t, :] = self.output(h_0)
+        
+        return outputs, h_0
 
 class MRNNFixD(nn.Module):
     """mRNN with fixed d for time series prediction"""
@@ -343,6 +424,7 @@ class MVRNNFixD(nn.Module):
         for times in range(time_steps):
             outputs[times, :], hidden_state, info = self.mvrnn_cell(x[times, :], weights_d,
                                                    hidden_state, sample = sample)
+                                                   
             self.kl_losses.append(info['kl_loss'])
             self.nll_losses.append(info['nll_loss'])
 

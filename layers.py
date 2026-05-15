@@ -8,7 +8,6 @@ from typing import Tuple, Dict
    from https://arxiv.org/pdf/2006.03860 and Variational Recurrent
    Neural Network (VRNN) from https://arxiv.org/abs/1506.02216."""
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 EPS = torch.finfo(torch.float).eps # numerical logs
 
 class MRNNFixDCell(nn.RNNCellBase):
@@ -308,6 +307,11 @@ class VRNNCell(nn.Module):
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU()
         )
+        self.decoder_mean = nn.Linear(hidden_size, input_size)  
+        self.decoder_std = nn.Sequential(
+            nn.Linear(hidden_size, input_size),  
+            nn.Softplus()  # Ensures positive std
+        )
         
         # Recurrence (h_t = f(phi_x_t, phi_z_t, h_{t-1}))
         self.rnn = nn.GRUCell(hidden_size + hidden_size, hidden_size) 
@@ -364,7 +368,7 @@ class VRNNCell(nn.Module):
 
     def _reparameterize_sample(self, mean: torch.Tensor, std: torch.Tensor, device: torch.device) -> torch.Tensor:
         """Reparameterization trick"""
-        eps = torch.empty(size=std.size(), device=device, dtype=torch.float).normal_()
+        eps = torch.empty(size=std.size(), device=mean.device, dtype=torch.float).normal_()
         return eps.mul(std).add_(mean)
     
     def _kld_gauss(self, mean_1, std_1, mean_2, std_2):
@@ -516,7 +520,7 @@ class MVRNNFixDCell(nn.RNNCellBase):
     
     def _reparameterize_sample(self, mean: torch.Tensor, std: torch.Tensor) -> torch.Tensor:
         """Reparameterization trick"""
-        eps = torch.empty(size=std.size(), device=device, dtype=torch.float).normal_()
+        eps = torch.empty(size=std.size(), device=mean.device, dtype=torch.float).normal_()
         return eps.mul(std).add_(mean)
     
     def _kld_gauss(self, mean_1, std_1, mean_2, std_2):
@@ -712,7 +716,7 @@ class MVRNNCell(nn.Module):
 
     def _reparameterize_sample(self, mean: torch.Tensor, std: torch.Tensor) -> torch.Tensor:
         """Reparameterization trick"""
-        eps = torch.empty(size=std.size(), device=device, dtype=torch.float).normal_()
+        eps = torch.empty(size=std.size(), device=mean.device, dtype=torch.float).normal_()
         return eps.mul(std).add_(mean)
     
     def _kld_gauss(self, mean_1, std_1, mean_2, std_2):
@@ -874,7 +878,7 @@ class MVRNNFixDCell_WAE(nn.RNNCellBase):
     
     def _reparameterize_sample(self, mean: torch.Tensor, std: torch.Tensor) -> torch.Tensor:
         """Reparameterization trick"""
-        eps = torch.empty(size=std.size(), device=device, dtype=torch.float).normal_()
+        eps = torch.empty(size=std.size(), device=mean.device, dtype=torch.float).normal_()
         return eps.mul(std).add_(mean)
     
     def rbf_kernel(self, x, y, sigma=1.0):
@@ -1109,9 +1113,8 @@ class MVRNNCell_WAE(nn.Module):
 
     def _reparameterize_sample(self, mean: torch.Tensor, std: torch.Tensor) -> torch.Tensor:
         """Reparameterization trick"""
-        eps = torch.empty(size=std.size(), device=device, dtype=torch.float).normal_()
+        eps = torch.empty(size=std.size(), device=mean.device, dtype=torch.float).normal_()
         return eps.mul(std).add_(mean)
-
 
     def _nll_gauss(self, mean, std, x):
         return torch.sum(torch.log(std + EPS) + (x - mean).pow(2)/(2*std.pow(2)))
