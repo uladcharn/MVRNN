@@ -30,7 +30,7 @@ import review_classification.models as models
 PARSER = argparse.ArgumentParser()
 # In review classification scenario,
 # RNN, LSTM, mRNN_fixD, mLSTM_fixD, MVRNN_fixD are tested.
-PARSER.add_argument('--algorithm', type=str, default='mVRNN_fixD',
+PARSER.add_argument('--algorithm', type=str, default='mRNN_fixD',
                     help='The test algorithm.')
 PARSER.add_argument('--epochs', type=int, default=500,
                     help='Number of epochs to train.')
@@ -40,7 +40,7 @@ PARSER.add_argument('--weight_decay', type=float, default=5e-4,
                     help='Weight decay (L2 loss on parameters).')
 PARSER.add_argument('--hidden_size', type=int, default=128,
                     help='Number of hidden units.')
-PARSER.add_argument('--latent_size', type=int, default=64,
+PARSER.add_argument('--latent_size', type=int, default=32,
                     help='Number of latent units.')
 PARSER.add_argument('--batch_size', type=int, default=64,
                     help='Number of batch size.')
@@ -54,21 +54,11 @@ PARSER.add_argument('--dropout', type=float, default=0.0,
                     help='Dropout rate (1 - keep probability).')
 FLAGS = PARSER.parse_args()
 
-
-def main():
-    batch_size = FLAGS.batch_size
-    hidden_size = FLAGS.hidden_size
-    latent_size = FLAGS.latent_size
-    nb_class = FLAGS.nb_class
-    dropout = FLAGS.dropout
-    k = FLAGS.K
-
+def preprocess_data(data_dict):
     # split train/val/test
     train_size = 282
     val_size = 50
-
-    with open('data/review_classification/data.json', 'r') as files:
-        data_dict = json.load(files)
+    
     data = data_dict['data']
     label = np.array(data_dict['label'])
     length_list = np.array([len(term)-1 if len(term) < FLAGS.pad_size else
@@ -114,13 +104,158 @@ def main():
     test_label = torch.LongTensor(test_label)
     test_length = torch.LongTensor(test_length)
 
-    acc_list = []
-    loss_list = []
-    f1_list = []
-    pre_list = []
-    recall_list = []
+    return [(train_data,train_label,train_length), (val_data,val_label,val_length),
+                (test_data,test_label,test_length), input_size]
 
-    for times in range(100):
+def train(epoch, model, optimizer, batch_size, train_data_info, val_data_info):
+        
+        train_data, train_label, train_length = train_data_info[0], train_data_info[1], train_data_info[2]
+        val_data, val_label, val_length = val_data_info[0], val_data_info[1], val_data_info[2]
+
+        t_0 = time.time()
+        total_batch = np.ceil(train_data.shape[1] / batch_size)
+        loss_train_avg = 0.0
+        acc_train_avg = 0.0
+
+        for batch_num in range(int(total_batch)):
+            if batch_num == total_batch - 1:
+                batch_input = train_data[:, batch_num * batch_size:]
+                batch_label = train_label[batch_num * batch_size:]
+                batch_length = train_length[batch_num * batch_size:]
+            else:
+                batch_input = train_data[:, batch_num * batch_size:
+                                            (batch_num + 1) * batch_size]
+                batch_label = train_label[batch_num * batch_size:
+                                            (batch_num + 1) * batch_size]
+                batch_length = train_length[batch_num * batch_size:
+                                            (batch_num + 1) * batch_size]
+            model.train()
+            optimizer.zero_grad()
+            if FLAGS.algorithm in ['VRNN', 'mVRNN', 'mVRNN_fixD', 'VRNN_WAE', 'mVRNN_WAE', 'mVRNN_fixD_WAE']:
+                logit, info = model(batch_input, batch_length)
+            else:
+                logit = model(batch_input, batch_length)
+            loss_train = F.nll_loss(logit, batch_label)
+            acc_train = accuracy(logit, batch_label)
+            loss_train_avg += loss_train.data.item()
+            acc_train_avg += acc_train.item()
+            loss_train.backward()
+            optimizer.step()
+        loss_train_avg = loss_train_avg / total_batch
+        acc_train_avg = acc_train_avg / total_batch
+
+        total_batch = np.ceil(val_data.shape[1] / batch_size)
+        loss_val_avg = 0.0
+        acc_val_avg = 0.0
+        with torch.no_grad():
+            for batch_num in range(int(total_batch)):
+                if batch_num == total_batch - 1:
+                    batch_input = val_data[:, batch_num * batch_size:]
+                    batch_label = val_label[batch_num * batch_size:]
+                    batch_length = val_length[batch_num * batch_size:]
+                else:
+                    batch_input = val_data[:, batch_num * batch_size:
+                                                (batch_num + 1) * batch_size]
+                    batch_label = val_label[batch_num * batch_size:
+                                            (batch_num + 1) * batch_size]
+                    batch_length = val_length[batch_num * batch_size:
+                                                (batch_num + 1) * batch_size]
+                if FLAGS.algorithm in ['VRNN', 'mVRNN', 'mVRNN_fixD', 'VRNN_WAE', 'mVRNN_WAE', 'mVRNN_fixD_WAE']:
+                    logit_val, info = model(batch_input, batch_length)
+                else:
+                    logit_val = model(batch_input, batch_length)
+                loss_val = F.nll_loss(logit_val, batch_label)
+                acc_val = accuracy(logit_val, batch_label)
+                loss_val_avg += loss_val.data.item()
+                acc_val_avg += acc_val.item()
+            loss_val_avg = loss_val_avg/total_batch
+            acc_val_avg = acc_val_avg / total_batch
+
+        print('Train Stage, Epoch: {:04d}'.format(epoch + 1),
+                'loss_train: {:.4f}'.format(loss_train_avg),
+                'acc_train: {:.4f}'.format(acc_train_avg),
+                'loss_val: {:.4f}'.format(loss_val_avg),
+                'acc_val: {:.4f}'.format(acc_val_avg),
+                'time_cost: {:.4f}s'.format(time.time()-t_0))
+        
+        if FLAGS.algorithm in ['VRNN', 'mVRNN', 'mVRNN_fixD', 'VRNN_WAE', 'mVRNN_WAE', 'mVRNN_fixD_WAE']:
+            return loss_val_avg, acc_val_avg, info
+        else:
+            return loss_val_avg, acc_val_avg
+
+def compute_test(best_model, batch_size, test_data_info):
+    # Restore best model
+    model = best_model
+    model.eval()
+
+    test_data, test_label, test_length = test_data_info[0], test_data_info[1], test_data_info[2]
+
+    total_batch = np.ceil(test_data.shape[1] / batch_size)
+    loss_test_avg = 0.0
+    acc_test_avg = 0.0
+    f1_test_avg = 0.0
+    pre_test_avg = 0.0
+    recall_test_avg = 0.0
+    with torch.no_grad():
+        for batch_num in range(int(total_batch)):
+            if batch_num == total_batch - 1:
+                batch_input = test_data[:, batch_num * batch_size:]
+                batch_label = test_label[batch_num * batch_size:]
+                batch_length = test_length[batch_num * batch_size:]
+            else:
+                batch_input = test_data[:, batch_num * batch_size:
+                                            (batch_num + 1) * batch_size]
+                batch_label = test_label[batch_num * batch_size:
+                                            (batch_num + 1) * batch_size]
+                batch_length = test_length[batch_num * batch_size:
+                                            (batch_num + 1) * batch_size]
+            logit_test = model(batch_input, batch_length)
+            loss_test = F.nll_loss(logit_test, batch_label)
+            acc_test = accuracy(logit_test, batch_label)
+            pred = logit_test.max(1)[1].type_as(test_label).cpu().\
+                detach().numpy()
+            loss_test_avg += loss_test.data.item()
+            acc_test_avg += acc_test.item()
+            f1_test_avg += f1_score(test_label.cpu().detach().numpy(),
+                                    pred, average='macro')
+            pre_test_avg += precision_score(test_label.cpu().detach().
+                                            numpy(), pred, average='macro')
+            recall_test_avg += recall_score(test_label.cpu().detach().
+                                            numpy(), pred, average='macro')
+        loss_test_avg = loss_test_avg/total_batch
+        acc_test_avg = acc_test_avg / total_batch
+        f1_test_avg = f1_test_avg / total_batch
+        pre_test_avg = pre_test_avg / total_batch
+        recall_test_avg = recall_test_avg / total_batch
+
+        print("Test set results:",
+                "loss= {:.4f}".format(loss_test_avg),
+                "accuracy= {:.4f}".format(acc_test_avg))
+    acc_list.append(acc_test_avg)
+    loss_list.append(loss_test_avg)
+    f1_list.append(f1_test_avg)
+    pre_list.append(pre_test_avg)
+    recall_list.append(recall_test_avg)
+    print(acc_list)
+    print(loss_list)
+    print(f1_list)
+    print(pre_list)
+    print(recall_list) 
+
+def main():
+    batch_size = FLAGS.batch_size
+    hidden_size = FLAGS.hidden_size
+    latent_size = FLAGS.latent_size
+    nb_class = FLAGS.nb_class
+    dropout = FLAGS.dropout
+    k = FLAGS.K
+
+    with open('data/review_classification/data.json', 'r') as files:
+        data_dict = json.load(files)
+    
+    train_data_info, val_data_info, test_data_info, input_size = preprocess_data(data_dict)
+
+    for times in range(30):
         random.seed(times)
         np.random.seed(times)
         torch.manual_seed(times)
@@ -155,11 +290,44 @@ def main():
                                 latent_size=latent_size,
                                 k=FLAGS.K,
                                 dropout=dropout)
+        elif FLAGS.algorithm == 'mVRNN':
+            model = models.MVRNN(input_size=input_size,
+                                hidden_size=hidden_size,
+                                output_size=nb_class,
+                                latent_size=latent_size,
+                                k=FLAGS.K,
+                                dropout=dropout)
+        elif FLAGS.algorithm == 'mVRNN_fixD_WAE':
+            model = models.MVRNNFixD_WAE(input_size=input_size,
+                                hidden_size=hidden_size,
+                                output_size=nb_class,
+                                latent_size=latent_size,
+                                k=FLAGS.K,
+                                dropout=dropout)
+            
+        elif FLAGS.algorithm == 'mVRNN_WAE':
+            model = models.MVRNN(input_size=input_size,
+                                hidden_size=hidden_size,
+                                output_size=nb_class,
+                                latent_size=latent_size,
+                                k=FLAGS.K,
+                                dropout=dropout)
         else:
             print('Algorithm selection ERROR!!!')
         optimizer = optim.AdamW(model.parameters(),
                                lr=FLAGS.lr,
                                weight_decay=FLAGS.weight_decay)
+        
+        epoch_info = {
+            'kl_loss': np.array(0),
+            'nll_loss': np.array(0),
+            'prior_mean': np.array(0),
+            'prior_std': np.array(0),
+            'enc_mean': np.array(0),  
+            'enc_std': np.array(0),   
+            'dec_mean': np.array(0),
+            'dec_std': np.array(0)
+        }
 
         if torch.cuda.is_available():
             model.cuda()
@@ -173,133 +341,32 @@ def main():
             train_length = train_length.cuda()
             val_length = val_length.cuda()
 
-        def train(epoch):
-            t_0 = time.time()
-            total_batch = np.ceil(train_data.shape[1] / batch_size)
-            loss_train_avg = 0.0
-            acc_train_avg = 0.0
-
-            for batch_num in range(int(total_batch)):
-                if batch_num == total_batch - 1:
-                    batch_input = train_data[:, batch_num * batch_size:]
-                    batch_label = train_label[batch_num * batch_size:]
-                    batch_length = train_length[batch_num * batch_size:]
-                else:
-                    batch_input = train_data[:, batch_num * batch_size:
-                                                (batch_num + 1) * batch_size]
-                    batch_label = train_label[batch_num * batch_size:
-                                              (batch_num + 1) * batch_size]
-                    batch_length = train_length[batch_num * batch_size:
-                                                (batch_num + 1) * batch_size]
-                model.train()
-                optimizer.zero_grad()
-                logit = model(batch_input, batch_length)
-                loss_train = F.nll_loss(logit, batch_label)
-                acc_train = accuracy(logit, batch_label)
-                loss_train_avg += loss_train.data.item()
-                acc_train_avg += acc_train.item()
-                loss_train.backward()
-                optimizer.step()
-            loss_train_avg = loss_train_avg / total_batch
-            acc_train_avg = acc_train_avg / total_batch
-
-            total_batch = np.ceil(val_data.shape[1] / batch_size)
-            loss_val_avg = 0.0
-            acc_val_avg = 0.0
-            with torch.no_grad():
-                for batch_num in range(int(total_batch)):
-                    if batch_num == total_batch - 1:
-                        batch_input = val_data[:, batch_num * batch_size:]
-                        batch_label = val_label[batch_num * batch_size:]
-                        batch_length = val_length[batch_num * batch_size:]
-                    else:
-                        batch_input = val_data[:, batch_num * batch_size:
-                                                  (batch_num + 1) * batch_size]
-                        batch_label = val_label[batch_num * batch_size:
-                                                (batch_num + 1) * batch_size]
-                        batch_length = val_length[batch_num * batch_size:
-                                                  (batch_num + 1) * batch_size]
-                    logit_val = model(batch_input, batch_length)
-                    loss_val = F.nll_loss(logit_val, batch_label)
-                    acc_val = accuracy(logit_val, batch_label)
-                    loss_val_avg += loss_val.data.item()
-                    acc_val_avg += acc_val.item()
-                loss_val_avg = loss_val_avg/total_batch
-                acc_val_avg = acc_val_avg / total_batch
-
-            print('Train Stage, Epoch: {:04d}'.format(epoch + 1),
-                  'loss_train: {:.4f}'.format(loss_train_avg),
-                  'acc_train: {:.4f}'.format(acc_train_avg),
-                  'loss_val: {:.4f}'.format(loss_val_avg),
-                  'acc_val: {:.4f}'.format(acc_val_avg),
-                  'time_cost: {:.4f}s'.format(time.time()-t_0))
-            return loss_val_avg, acc_val_avg
-        loss_val_list = []
-        best_loss = 100.
+        # Training model
+        best_loss = np.inf
         best_epoch = 0
         bad_counter = 0
+        best_loss_global = np.inf
+        best_model_global = None
         for epoch in range(100):
-            loss_val_avg, acc_val_avg = train(epoch)
+            if FLAGS.algorithm in ['VRNN', 'mVRNN', 'mVRNN_fixD', 'VRNN_WAE', 'mVRNN_WAE', 'mVRNN_fixD_WAE']:
+                loss_val_avg, acc_val_avg, info = train(epoch, model, optimizer, batch_size,
+                         train_data_info, val_data_info)
+                if FLAGS.algorithm in ['VRNN', 'mVRNN', 'mVRNN_fixD']:
+                    epoch_info['kl_loss'] = np.append(epoch_info['kl_loss'], info['kl_loss'].mean(dim=0).detach().cpu().numpy())
+            else:
+                loss_val_avg, acc_val_avg = train(epoch, model, optimizer, batch_size,
+                         train_data_info, val_data_info)
             if loss_val_avg < best_loss:
                 best_loss = loss_val_avg
                 best_epoch = epoch
                 best_model = deepcopy(model)
+            if best_loss < best_loss_global:
+                best_model_global = best_model
+                best_loss_global = best_loss
 
-        # Restore best model
+        # Computing test
         print('Loading {}th epoch'.format(best_epoch))
-        model = best_model
-        model.eval()
-        total_batch = np.ceil(test_data.shape[1] / batch_size)
-        loss_test_avg = 0.0
-        acc_test_avg = 0.0
-        f1_test_avg = 0.0
-        pre_test_avg = 0.0
-        recall_test_avg = 0.0
-        with torch.no_grad():
-            for batch_num in range(int(total_batch)):
-                if batch_num == total_batch - 1:
-                    batch_input = test_data[:, batch_num * batch_size:]
-                    batch_label = test_label[batch_num * batch_size:]
-                    batch_length = test_length[batch_num * batch_size:]
-                else:
-                    batch_input = test_data[:, batch_num * batch_size:
-                                               (batch_num + 1) * batch_size]
-                    batch_label = test_label[batch_num * batch_size:
-                                             (batch_num + 1) * batch_size]
-                    batch_length = test_length[batch_num * batch_size:
-                                               (batch_num + 1) * batch_size]
-                logit_test = model(batch_input, batch_length)
-                loss_test = F.nll_loss(logit_test, batch_label)
-                acc_test = accuracy(logit_test, batch_label)
-                pred = logit_test.max(1)[1].type_as(test_label).cpu().\
-                    detach().numpy()
-                loss_test_avg += loss_test.data.item()
-                acc_test_avg += acc_test.item()
-                f1_test_avg += f1_score(test_label.cpu().detach().numpy(),
-                                        pred, average='macro')
-                pre_test_avg += precision_score(test_label.cpu().detach().
-                                                numpy(), pred, average='macro')
-                recall_test_avg += recall_score(test_label.cpu().detach().
-                                                numpy(), pred, average='macro')
-            loss_test_avg = loss_test_avg/total_batch
-            acc_test_avg = acc_test_avg / total_batch
-            f1_test_avg = f1_test_avg / total_batch
-            pre_test_avg = pre_test_avg / total_batch
-            recall_test_avg = recall_test_avg / total_batch
-
-            print("Test set results:",
-                  "loss= {:.4f}".format(loss_test_avg),
-                  "accuracy= {:.4f}".format(acc_test_avg))
-        acc_list.append(acc_test_avg)
-        loss_list.append(loss_test_avg)
-        f1_list.append(f1_test_avg)
-        pre_list.append(pre_test_avg)
-        recall_list.append(recall_test_avg)
-        print(acc_list)
-        print(loss_list)
-        print(f1_list)
-        print(pre_list)
-        print(recall_list)
+        compute_test(best_model,batch_size,test_data_info)
 
     mean_acc = np.mean(acc_list)
     std_acc = np.std(acc_list)
@@ -317,7 +384,6 @@ def main():
     std_recall = np.std(recall_list)
     max_recall = np.max(recall_list)
     
-
     print('ACC avg:', mean_acc, 'std:', std_acc,
           'max:', max_acc)
     print('LOSS avg:', mean_loss, 'std:', std_loss,
@@ -328,8 +394,9 @@ def main():
           'max:', max_pres)
     print('Recall avg:', mean_recall, 'std:', std_recall,
           'max:', max_recall)
-    if FLAGS.algorithm == 'VRNN' or FLAGS.algorithm == 'MVRNN':
-        print('KL Loss:', )
+
+    PATH = f"time_series_prediction/saved_models/{FLAGS.algorithm}_{FLAGS.dataset}_{FLAGS.epoch}"
+    torch.save(best_model_global.state_dict(), PATH)
     
     #Logging
 
@@ -353,4 +420,11 @@ def main():
 
 
 if __name__ == "__main__":
+    # global parameters
+    acc_list = []
+    loss_list = []
+    f1_list = []
+    pre_list = []
+    recall_list = []
+
     main()
