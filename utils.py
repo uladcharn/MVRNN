@@ -10,6 +10,7 @@
 
 import numpy as np
 import torch
+from scipy.signal import butter, filtfilt
 
 def create_dataset(x, y):
     """creat train dataset for time series prediction"""
@@ -43,3 +44,18 @@ def accuracy(output, labels):
 def to_torch(state):
     state = torch.from_numpy(state).float()
     return state
+
+def bandpass_filter(signal, fs=128, low=0.5, high=4):
+    nyq = fs / 2
+    b, a = butter(4, [low/nyq, high/nyq], btype='band')
+    return filtfilt(b, a, signal)
+
+def detrend_local(x, window=400):
+    """Local polynomial detrending (DFA-style)"""
+    series = x.copy()
+    for i in range(0, len(x), window):
+        idx = slice(i, min(i+window, len(x)))
+        t = np.arange(len(x[idx]))
+        p = np.polyfit(t, x[idx], 1)
+        series[idx] -= np.polyval(p, t)
+    return series
